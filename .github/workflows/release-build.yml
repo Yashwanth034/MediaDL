@@ -1,0 +1,119 @@
+name: MediaDL release build
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.platform }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            platform: linux-x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux-arm64
+          - runner: windows-2025
+            platform: windows-x86_64
+          - runner: windows-11-arm
+            platform: windows-arm64
+          - runner: macos-15-intel
+            platform: macos-x86_64
+          - runner: macos-15
+            platform: macos-arm64
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install development and packaging dependencies
+        run: python -m pip install -e ".[dev,package]"
+      - name: Lint
+        run: python -m ruff check .
+      - name: Test
+        run: python -m pytest
+      - name: Build standalone
+        run: >-
+          python packaging/build_standalone.py
+          --expected-platform "${{ matrix.platform }}"
+          --base-url "https://github.com/${{ github.repository }}/releases/download/${{ github.ref_name }}"
+      - name: Smoke standalone
+        run: python packaging/smoke_standalone.py
+      - name: POSIX installer smoke
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          rm -rf .ci-install-home
+          mkdir -p .ci-install-home
+          HOME="$PWD/.ci-install-home" PATH="/usr/bin:/bin" sh packaging/install.sh "$PWD/dist/mdl-${{ matrix.platform }}"
+          HOME="$PWD/.ci-install-home" PATH="$PWD/.ci-install-home/.local/bin:/usr/bin:/bin" "$PWD/.ci-install-home/.local/bin/mdl" --version
+      - name: Windows installer smoke
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $env:LOCALAPPDATA = Join-Path $PWD '.ci-localappdata'
+          powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/install.ps1 "dist/mdl-${{ matrix.platform }}.exe"
+          & "$env:LOCALAPPDATA\MediaDL\bin\mdl.exe" --version
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mediadl-${{ matrix.platform }}
+          if-no-files-found: error
+          path: |
+            dist/mdl-${{ matrix.platform }}*
+            dist/manifest-${{ matrix.platform }}.json
+
+  manifest:
+    name: Merge release manifest
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: mediadl-*
+          path: release-dist
+          merge-multiple: true
+      - name: Merge manifest fragments
+        run: >-
+          python packaging/merge_manifests.py
+          release-dist/manifest-*.json
+          --output release-dist/manifest.json
+      - name: Validate merged manifest
+        run: |
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          expected = {
+              "linux-x86_64", "linux-arm64",
+              "windows-x86_64", "windows-arm64",
+              "macos-x86_64", "macos-arm64",
+          }
+          payload = json.loads(Path("release-dist/manifest.json").read_text())
+          assert set(payload["assets"]) == expected, payload["assets"].keys()
+          print("manifest-platforms=ok")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mediadl-release-manifest
+          path: release-dist/manifest.json
+          if-no-files-found: error
+      - name: Create or update GitHub release
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || gh release create "$GITHUB_REF_NAME" --title "MediaDL $GITHUB_REF_NAME" --generate-notes
+          gh release upload "$GITHUB_REF_NAME" release-dist/mdl-* release-dist/manifest.json --clobber
