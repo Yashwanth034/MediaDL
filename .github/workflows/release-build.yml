@@ -30,8 +30,8 @@ jobs:
             platform: macos-arm64
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
           cache: pip
@@ -63,7 +63,7 @@ jobs:
           $env:LOCALAPPDATA = Join-Path $PWD '.ci-localappdata'
           powershell.exe -NoProfile -ExecutionPolicy Bypass -File packaging/install.ps1 "dist/mdl-${{ matrix.platform }}.exe"
           & "$env:LOCALAPPDATA\MediaDL\bin\mdl.exe" --version
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mediadl-${{ matrix.platform }}
           if-no-files-found: error
@@ -76,11 +76,11 @@ jobs:
     needs: build
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           pattern: mediadl-*
           path: release-dist
@@ -104,7 +104,7 @@ jobs:
           assert set(payload["assets"]) == expected, payload["assets"].keys()
           print("manifest-platforms=ok")
           PY
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: mediadl-release-manifest
           path: release-dist/manifest.json

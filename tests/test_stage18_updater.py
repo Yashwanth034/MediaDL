@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -67,6 +68,10 @@ def test_verified_download_refuses_checksum_mismatch_and_removes_staged_file(
     assert not destination.exists()
 
 
+@pytest.mark.skipif(
+    os.name == "nt",
+    reason="POSIX executable-mode semantics are not meaningful on Windows",
+)
 def test_posix_update_replaces_target_atomically_after_verification(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

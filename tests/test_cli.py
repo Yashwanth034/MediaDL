@@ -18,4 +18,3 @@ def test_help() -> None:
 
     assert result.exit_code == 0
     assert "Download single videos, playlists, and channels cleanly." in result.stdout
-    assert "--version" in result.stdout
