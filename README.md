@@ -37,7 +37,7 @@ mdl recover-unavailable JOB_ID
 mdl history
 mdl doctor
 mdl config
-mdl update --check --manifest RELEASE_MANIFEST_URL
+mdl update --check
 ```
 
 `--where` is repeatable and accepts user-entered values instead of requiring a hard-coded flag for every threshold. Supported v1 fields are views, likes, duration, upload date, title, channel/uploader, availability/status, and media type.
@@ -59,7 +59,9 @@ Numeric filters accept plain values plus `K`, `L`, `M`, `Cr`, and `B`, including
 - Concise terminal transfer progress with bytes, speed, percentage, and ETA when available
 - Bounded concurrent DASH/HLS fragment fetching (4 by default), alongside conservative collection-worker limits for reliable throughput
 - Browser-cookie access for content the user is authorized to access
-- Standalone builds bundle Deno 2.9.5 plus yt-dlp EJS for reliable modern YouTube challenge solving, so users do not need to install or upgrade Node/Deno; source/pip installs still accept supported Deno, Node 22+, QuickJS, or Bun runtimes
+- Standalone builds bundle a validated Deno runtime plus yt-dlp EJS for reliable modern YouTube challenge solving, so users do not need to install or upgrade Node/Deno; source/pip installs still accept supported Deno, Node 22+, QuickJS, or Bun runtimes
+- Automatic standalone update checks use the official latest-release manifest and SHA-256 verification; `mdl update --check` remains available for an explicit check
+- Daily dependency automation watches Python packages, GitHub Actions, and the bundled Deno runtime; dependency changes must pass the full six-platform release build before they are suitable for release
 - `mdl doctor`, checksum-verified standalone updates, and one-time per-user installers
 - Large-channel bounded scans and subquadratic smart-dedupe candidate screening
 
@@ -71,9 +73,9 @@ Release binaries are standalone. After one-time installation, normal use is simp
 mdl URL
 ```
 
-No virtual-environment activation, repository `cd`, background service, or repeated installation is required.
+No virtual-environment activation, repository `cd`, background service, or repeated installation is required. Standalone installs perform a best-effort update check at most once every six hours; an offline or failed update check never blocks the requested command. Administrators can set `MEDIADL_DISABLE_AUTO_UPDATE=1` when centrally managing releases.
 
-FFmpeg is a required external media dependency for merge/conversion operations; ffprobe is used for probing and smart media fingerprinting. The standalone bundles its JavaScript runtime and EJS support, but not FFmpeg/ffprobe. `mdl doctor` reports their status clearly.
+FFmpeg is a required external media dependency for merge/conversion operations; ffprobe is used for probing and smart media fingerprinting. The standalone bundles its JavaScript runtime and EJS support, but not FFmpeg/ffprobe. MediaDL never silently replaces system FFmpeg; `mdl doctor` reports its status so the operating system's package manager remains authoritative.
 
 ## Documentation
 

@@ -44,12 +44,12 @@ Native Windows/macOS/Linux-ARM release execution remains a release-validation st
 ## Final local evidence
 
 - Ruff: clean
-- Tests: 329/329 passing
+- Tests: 334/334 passing
 - Coverage audit: 86% across production code after adding guided channel-playlist discovery/selection; core engines remain strongly covered
 - Dependency check: no broken requirements
 - Python bytecode compilation: clean
 - Package wheel: `mediadl-1.0.0-py3-none-any.whl` rebuilt and verified from the final v1.0.0 source
-- Linux x86_64 standalone: rebuilt from the final v1.0.0 source with yt-dlp EJS and bundled Deno 2.9.5
+- Linux x86_64 standalone: pre-release validation build completed with yt-dlp EJS and bundled Deno 2.9.5; dependency-refresh automation subsequently advanced the pending release source to Deno 2.9.6 for the next six-platform validation build
 - Standalone `--version`, `--help`, empty-PATH bundled-runtime smoke, and normal `doctor`: green
 - Standalone database: schema 3, `PRAGMA integrity_check = ok`
 - One-time POSIX installer run twice in isolated home: green, one PATH marker only, installed bytes match standalone SHA exactly; installed `doctor` reports yt-dlp 2026.08.19, EJS, bundled Deno 2.9.5, FFmpeg, and FFprobe healthy

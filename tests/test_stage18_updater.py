@@ -9,8 +9,11 @@ import pytest
 
 from mediadl.core.errors import InputError
 from mediadl.core.updater import (
+    DEFAULT_UPDATE_MANIFEST_URL,
     ReleaseAsset,
     ReleaseManifest,
+    UpdateCheck,
+    auto_update_if_due,
     check_update,
     download_verified_asset,
     install_verified_update,
@@ -89,6 +92,70 @@ def test_posix_update_replaces_target_atomically_after_verification(
     assert target.read_bytes() == b"new"
     assert not staged.exists()
     assert target.stat().st_mode & 0o100
+
+
+def test_default_update_feed_points_to_latest_official_release_asset() -> None:
+    assert DEFAULT_UPDATE_MANIFEST_URL.endswith("/releases/latest/download/manifest.json")
+
+
+def test_auto_update_check_is_throttled_between_invocations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[str] = []
+    asset = ReleaseAsset(url="https://example.invalid/mdl", sha256="a" * 64)
+    check = UpdateCheck(
+        current_version="1.0.0",
+        latest_version="1.0.0",
+        platform_key="linux-x86_64",
+        asset=asset,
+    )
+
+    monkeypatch.setattr(
+        "mediadl.core.updater.load_manifest",
+        lambda url, timeout=20.0: calls.append(url) or object(),
+    )
+    monkeypatch.setattr("mediadl.core.updater.check_update", lambda *_args, **_kwargs: check)
+
+    state = tmp_path / "update-check.json"
+    first = auto_update_if_due(current_version="1.0.0", state_file=state, now=1000)
+    second = auto_update_if_due(current_version="1.0.0", state_file=state, now=1001)
+
+    assert first.status == "current"
+    assert second.status == "not_due"
+    assert calls == [DEFAULT_UPDATE_MANIFEST_URL]
+
+
+def test_auto_update_installs_newer_checksum_verified_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asset = ReleaseAsset(url="https://example.invalid/mdl", sha256="b" * 64)
+    check = UpdateCheck(
+        current_version="1.0.0",
+        latest_version="1.1.0",
+        platform_key="linux-x86_64",
+        asset=asset,
+    )
+    staged = tmp_path / "mdl-1.1.0"
+    staged.write_bytes(b"verified")
+
+    monkeypatch.setattr("mediadl.core.updater.load_manifest", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("mediadl.core.updater.check_update", lambda *_args, **_kwargs: check)
+    monkeypatch.setattr("mediadl.core.updater.stage_update", lambda _check: staged)
+    monkeypatch.setattr(
+        "mediadl.core.updater.install_verified_update",
+        lambda _staged, executable=None: "installed",
+    )
+
+    result = auto_update_if_due(
+        current_version="1.0.0",
+        state_file=tmp_path / "state.json",
+        now=1000,
+    )
+
+    assert result.status == "installed"
+    assert result.latest_version == "1.1.0"
 
 
 def test_manifest_rejects_insecure_asset_urls() -> None:

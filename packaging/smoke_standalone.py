@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -58,16 +59,35 @@ def main() -> int:
         if "FFmpeg" not in isolated_doctor.stdout or "fail" not in isolated_doctor.stdout:
             raise SystemExit("Empty-PATH doctor did not report required FFmpeg as missing")
 
-        # With the normal host PATH restored, this build machine has FFmpeg and
-        # the complete installation must report healthy.
+        # Restore the runner PATH. FFmpeg is an external MediaDL dependency and is
+        # not guaranteed to be preinstalled on every GitHub-hosted image. If it is
+        # present, doctor must be fully healthy. If it is absent, doctor must fail
+        # specifically with the documented FFmpeg dependency message.
         healthy_env = env.copy()
         healthy_env["PATH"] = os.environ.get("PATH", "")
-        subprocess.run(
+        normal_doctor = subprocess.run(
             [str(binary), "doctor"],
-            check=True,
+            check=False,
             env=healthy_env,
-            stdout=subprocess.DEVNULL,
+            capture_output=True,
+            text=True,
         )
+        ffmpeg_available = shutil.which("ffmpeg", path=healthy_env["PATH"]) is not None
+        if ffmpeg_available:
+            if normal_doctor.returncode != 0:
+                detail = (normal_doctor.stdout + normal_doctor.stderr).strip()
+                raise SystemExit(f"Normal-PATH doctor failed unexpectedly:\n{detail}")
+        else:
+            if (
+                normal_doctor.returncode != 1
+                or "FFmpeg" not in normal_doctor.stdout
+                or "fail" not in normal_doctor.stdout
+            ):
+                detail = (normal_doctor.stdout + normal_doctor.stderr).strip()
+                raise SystemExit(
+                    "Doctor did not report the expected missing external FFmpeg dependency:\n"
+                    f"{detail}"
+                )
 
     print(f"standalone-smoke=ok platform={key}")
     return 0

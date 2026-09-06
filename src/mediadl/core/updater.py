@@ -11,6 +11,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -20,6 +21,10 @@ from mediadl.core.errors import InputError
 
 _SHA256_RE = re.compile(r"^[0-9a-fA-F]{64}$")
 _VERSION_RE = re.compile(r"^v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$")
+DEFAULT_UPDATE_MANIFEST_URL = (
+    "https://github.com/Yashwanth034/MediaDL/releases/latest/download/manifest.json"
+)
+AUTO_UPDATE_INTERVAL_SECONDS = 6 * 60 * 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +69,12 @@ class UpdateCheck:
     @property
     def update_available(self) -> bool:
         return _version_tuple(self.latest_version) > _version_tuple(self.current_version)
+
+
+@dataclass(frozen=True, slots=True)
+class AutoUpdateResult:
+    status: str
+    latest_version: str | None = None
 
 
 def platform_key(*, system: str | None = None, machine: str | None = None) -> str:
@@ -123,6 +134,35 @@ def check_update(
         platform_key=key,
         asset=asset,
     )
+
+
+def auto_update_if_due(
+    *,
+    current_version: str,
+    state_file: Path,
+    manifest_url: str = DEFAULT_UPDATE_MANIFEST_URL,
+    interval_seconds: float = AUTO_UPDATE_INTERVAL_SECONDS,
+    now: float | None = None,
+    executable: Path | None = None,
+) -> AutoUpdateResult:
+    """Best-effort standalone update check with a persistent bounded cadence."""
+
+    checked_at = time.time() if now is None else now
+    last_check = _read_last_update_check(state_file)
+    if last_check is not None and checked_at - last_check < interval_seconds:
+        return AutoUpdateResult("not_due")
+
+    # Record the attempt before networking so an offline machine does not retry on
+    # every MediaDL invocation. A later invocation retries after the bounded interval.
+    _write_last_update_check(state_file, checked_at)
+    manifest = load_manifest(manifest_url, timeout=5.0)
+    check = check_update(manifest, current_version=current_version)
+    if not check.update_available:
+        return AutoUpdateResult("current", check.latest_version)
+
+    staged = stage_update(check)
+    status = install_verified_update(staged, executable=executable)
+    return AutoUpdateResult(status, check.latest_version)
 
 
 def download_verified_asset(
@@ -214,6 +254,25 @@ def _schedule_windows_replace(staged: Path, target: Path) -> None:
     except OSError as exc:
         script.unlink(missing_ok=True)
         raise InputError(f"Could not schedule Windows update replacement: {exc}") from exc
+
+
+def _read_last_update_check(state_file: Path) -> float | None:
+    try:
+        payload = json.loads(state_file.read_text(encoding="utf-8"))
+        value = float(payload.get("checked_at"))
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, AttributeError):
+        return None
+    return value if value >= 0 else None
+
+
+def _write_last_update_check(state_file: Path, checked_at: float) -> None:
+    state_file.parent.mkdir(parents=True, exist_ok=True)
+    temporary = state_file.with_suffix(state_file.suffix + ".tmp")
+    temporary.write_text(
+        json.dumps({"checked_at": checked_at}, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary, state_file)
 
 
 def _version_tuple(value: str) -> tuple[int, int, int]:

@@ -7,6 +7,7 @@ import argparse
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -21,7 +22,7 @@ sys.path.insert(0, str(SRC))
 from mediadl import __version__  # noqa: E402
 from mediadl.core.updater import platform_key  # noqa: E402
 
-DENO_VERSION = "2.9.5"
+DENO_VERSION = "2.9.6"
 _DENO_ASSETS = {
     "linux-x86_64": "deno-x86_64-unknown-linux-gnu.zip",
     "linux-arm64": "deno-aarch64-unknown-linux-gnu.zip",
@@ -139,7 +140,7 @@ def prepare_bundled_deno(key: str) -> Path:
     base = f"https://github.com/denoland/deno/releases/download/v{DENO_VERSION}"
     _download(f"{base}/{asset}", archive)
     _download(f"{base}/{asset}.sha256sum", checksum_file)
-    expected = checksum_file.read_text(encoding="utf-8").strip().split()[0].casefold()
+    expected = _parse_sha256(checksum_file.read_text(encoding="utf-8"), asset=asset)
     actual = sha256(archive)
     if not expected or actual.casefold() != expected:
         archive.unlink(missing_ok=True)
@@ -166,6 +167,13 @@ def prepare_bundled_deno(key: str) -> Path:
     if detected != DENO_VERSION:
         raise SystemExit(f"Bundled Deno validation failed: expected {DENO_VERSION}, got {detected}")
     return executable
+
+
+def _parse_sha256(text: str, *, asset: str) -> str:
+    match = re.search(r"(?i)(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])", text)
+    if match is None:
+        raise SystemExit(f"Bundled Deno checksum file is invalid for {asset}")
+    return match.group(0).casefold()
 
 
 def _deno_version(path: Path) -> str | None:

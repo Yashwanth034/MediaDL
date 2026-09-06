@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import runpy
 import subprocess
 import sys
 from pathlib import Path
@@ -102,6 +103,29 @@ def test_standalone_builder_help_does_not_require_pyinstaller_to_be_installed() 
     )
     assert result.returncode == 0, result.stderr
     assert "--base-url" in result.stdout
+
+
+def test_standalone_builder_parses_powershell_style_deno_checksum() -> None:
+    namespace = runpy.run_path(str(ROOT / "packaging" / "build_standalone.py"))
+    parse_sha256 = namespace["_parse_sha256"]
+    digest = "171efab55ac6b9881fd53ee4c20f8bf3bb1340ffc618483746909014db12216a"
+    text = f"Algorithm : SHA256\nHash      : {digest.upper()}\nPath      : deno.zip\n"
+
+    assert parse_sha256(text, asset="deno.zip") == digest
+
+
+def test_runtime_refresh_replaces_only_the_deno_version_assignment() -> None:
+    namespace = runpy.run_path(str(ROOT / "packaging" / "refresh_runtime_versions.py"))
+    replace_deno_version = namespace["replace_deno_version"]
+    original = 'DENO_VERSION = "2.9.5"\nOTHER = "keep"\n'
+
+    updated, changed = replace_deno_version(original, "2.10.1")
+
+    assert changed
+    assert updated == 'DENO_VERSION = "2.10.1"\nOTHER = "keep"\n'
+    same, changed_again = replace_deno_version(updated, "2.10.1")
+    assert same == updated
+    assert not changed_again
 
 
 def test_release_manifest_merger_combines_distinct_platform_fragments(tmp_path: Path) -> None:

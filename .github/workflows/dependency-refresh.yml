@@ -1,0 +1,59 @@
+name: MediaDL dependency refresh
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 3 * * *"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  bundled-runtime:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - name: Check latest stable Deno
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python packaging/refresh_runtime_versions.py
+      - name: Detect runtime change
+        id: change
+        shell: bash
+        run: |
+          if git diff --quiet -- packaging/build_standalone.py; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Open Deno update pull request
+        if: steps.change.outputs.changed == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION=$(python - <<'PY'
+          import re
+          from pathlib import Path
+          text = Path("packaging/build_standalone.py").read_text()
+          print(re.search(r'^DENO_VERSION = "([^"]+)"$', text, re.MULTILINE).group(1))
+          PY
+          )
+          BRANCH="automation/deno-${VERSION}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -B "$BRANCH"
+          git add packaging/build_standalone.py
+          git commit -m "Update bundled Deno to ${VERSION}"
+          git push --force origin "$BRANCH"
+          if ! gh pr view "$BRANCH" >/dev/null 2>&1; then
+            gh pr create \
+              --base main \
+              --head "$BRANCH" \
+              --title "Update bundled Deno to ${VERSION}" \
+              --body "Automated stable Deno refresh. The full six-platform MediaDL release build must pass before this update is merged."
+          fi

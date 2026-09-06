@@ -25,7 +25,14 @@ from mediadl.core.formats import OutputFormat
 from mediadl.core.logging import configure_logging
 from mediadl.core.paths import get_app_paths
 from mediadl.core.policies import DedupeMode
-from mediadl.core.updater import check_update, install_verified_update, load_manifest, stage_update
+from mediadl.core.updater import (
+    DEFAULT_UPDATE_MANIFEST_URL,
+    auto_update_if_due,
+    check_update,
+    install_verified_update,
+    load_manifest,
+    stage_update,
+)
 from mediadl.dedupe.basic import BasicDedupeService
 from mediadl.dedupe.repository import SmartDedupeRepository
 from mediadl.dedupe.service import SmartDedupeService
@@ -824,12 +831,11 @@ def update(
 ) -> None:
     """Check for and install a checksum-verified standalone update."""
 
-    manifest_url = manifest or os.environ.get("MEDIADL_UPDATE_MANIFEST_URL")
-    if not manifest_url:
-        raise InputError(
-            "No MediaDL release feed is configured yet. Pass --manifest or set "
-            "MEDIADL_UPDATE_MANIFEST_URL."
-        )
+    manifest_url = (
+        manifest
+        or os.environ.get("MEDIADL_UPDATE_MANIFEST_URL")
+        or DEFAULT_UPDATE_MANIFEST_URL
+    )
     release = load_manifest(manifest_url)
     check = check_update(release, current_version=__version__)
     if not check.update_available:
@@ -1137,6 +1143,35 @@ def _normalized_argv(argv: list[str]) -> list[str]:
     return ["download", *argv]
 
 
+def _maybe_auto_update(argv: list[str]) -> None:
+    if not getattr(sys, "frozen", False):
+        return
+    if os.environ.get("MEDIADL_DISABLE_AUTO_UPDATE", "").casefold() in {"1", "true", "yes"}:
+        return
+    if argv and argv[0] in {"update", "--help", "-h", "--version", "-V"}:
+        return
+
+    paths = get_app_paths()
+    try:
+        result = auto_update_if_due(
+            current_version=__version__,
+            state_file=paths.data_dir / "update-check.json",
+        )
+    except Exception:
+        # Automatic maintenance must never block the user's requested command.
+        return
+    if result.status == "installed":
+        console.print(
+            f"[cyan]MediaDL {result.latest_version} installed.[/cyan] "
+            "This command will continue; the next run uses the new version."
+        )
+    elif result.status == "scheduled":
+        console.print(
+            f"[cyan]MediaDL {result.latest_version} downloaded.[/cyan] "
+            "The update will activate after this command exits."
+        )
+
+
 def main() -> None:
     """Console-script wrapper with guided bare-``mdl`` mode and stable errors."""
 
@@ -1150,7 +1185,9 @@ def main() -> None:
                 item_count_probe=_guided_item_count_probe,
                 playlist_discovery=_guided_playlist_discovery,
             )
-        app(args=_normalized_argv(argv))
+        normalized = _normalized_argv(argv)
+        _maybe_auto_update(normalized)
+        app(args=normalized)
     except typer.Exit as exc:
         raise SystemExit(exc.exit_code) from None
     except KeyboardInterrupt:
