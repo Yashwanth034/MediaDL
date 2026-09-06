@@ -1,89 +1,120 @@
 # MediaDL
 
-MediaDL is a terminal-first downloader for YouTube videos, playlists, Shorts, streams, and complete channels. It keeps common downloads simple while adding persistent jobs, filtering, resumability, conservative duplicate protection, and large-channel handling around yt-dlp.
+[![Release](https://img.shields.io/github/v/release/Yashwanth034/MediaDL)](https://github.com/Yashwanth034/MediaDL/releases/latest)
+[![License](https://img.shields.io/github/license/Yashwanth034/MediaDL)](LICENSE)
 
-**Version:** 1.0.0
+A clean cross-platform terminal downloader for YouTube videos, playlists, Shorts, streams, and complete channels.
 
-The Linux build has been directly user-validated. The release workflow is configured to build and validate standalone artifacts for Linux x86_64/ARM64, Windows x86_64/ARM64, and macOS Intel/Apple Silicon.
+MediaDL keeps simple downloads simple, while adding resumable jobs, filtering, duplicate protection, large-channel handling, and guided terminal workflows on top of yt-dlp.
 
-## Common usage
+## Install
 
-Run bare `mdl` for a guided terminal flow that asks for the source, channel section, selection/filter rules, format, and quality:
+Download the correct standalone binary from the [latest release](https://github.com/Yashwanth034/MediaDL/releases/latest):
+
+| Platform | Asset |
+|---|---|
+| Linux x86_64 | `mdl-linux-x86_64` |
+| Linux ARM64 | `mdl-linux-arm64` |
+| Windows x86_64 | `mdl-windows-x86_64.exe` |
+| Windows ARM64 | `mdl-windows-arm64.exe` |
+| macOS Intel | `mdl-macos-x86_64` |
+| macOS Apple Silicon | `mdl-macos-arm64` |
+
+Place the binary somewhere on your `PATH` and name it `mdl` (`mdl.exe` on Windows).
+
+The repository also includes one-time installers:
+
+```bash
+# Linux / macOS
+sh packaging/install.sh PATH_TO_DOWNLOADED_BINARY
+```
+
+```powershell
+# Windows PowerShell
+powershell -ExecutionPolicy Bypass -File packaging/install.ps1 PATH_TO_DOWNLOADED_BINARY
+```
+
+After installation, MediaDL can be run from any terminal:
 
 ```bash
 mdl
 ```
 
-Power users can still use explicit one-line commands:
+> **FFmpeg is required** for MediaDL's normal merge and conversion workflows. Run `mdl doctor` to check your installation.
+
+Standalone builds already include the JavaScript runtime and yt-dlp EJS support, so users do not need to install Python, Node, or Deno.
+
+## Usage
+
+Run `mdl` with no arguments for the guided flow:
+
+```bash
+mdl
+```
+
+Or use direct commands:
 
 ```bash
 mdl VIDEO_URL
-mdl VIDEO_URL --mp4
-mdl VIDEO_URL --mp3
 mdl VIDEO_URL --mp4 --quality 1080
+mdl VIDEO_URL --mp3
 
-mdl CHANNEL_URL --latest 20
-mdl CHANNEL_URL --views-above 10L --mp4 --quality 1080
-mdl CHANNEL_URL --likes-between 1L:5L --preview
-mdl CHANNEL_URL --sort most_liked --first 50
-
-mdl CHANNEL_A CHANNEL_B --videos --latest 20
-mdl CHANNEL_A CHANNEL_B --where "views>=12.5L" --where "likes<3L" --mp4
-mdl CHANNEL_URL --where "duration<=15m" --where "channel~example" --preview
+mdl PLAYLIST_URL --latest 20
+mdl CHANNEL_URL --videos --latest 50
+mdl CHANNEL_URL --views-above 10L --mp4
+mdl CHANNEL_URL --where "duration<=15m" --preview
 
 mdl resume
 mdl retry
-mdl recover-unavailable JOB_ID
 mdl history
 mdl doctor
-mdl config
 mdl update --check
 ```
 
-`--where` is repeatable and accepts user-entered values instead of requiring a hard-coded flag for every threshold. Supported v1 fields are views, likes, duration, upload date, title, channel/uploader, availability/status, and media type.
+Numeric filters understand values such as `50K`, `10L`, `1M`, `2.5Cr`, and `1B`.
 
-Numeric filters accept plain values plus `K`, `L`, `M`, `Cr`, and `B`, including decimals such as `12.5L` and `2.5Cr`.
+## Features
 
-## What v1 includes
+- Videos, playlists, Shorts, streams, complete channels, and multi-source batches
+- MP4, WebM, MKV, MP3, M4A, Opus, FLAC, WAV, and original/best output
+- Resolution and audio-quality controls
+- First, last, range, latest, oldest, views, likes, date, duration, title, and custom filters
+- Persistent jobs with retry, interruption recovery, and resume
+- Conservative duplicate protection using source IDs, SHA-256, audio fingerprints, and perceptual video checks
+- Guided channel section and playlist selection
+- Browser-cookie support for content the user is authorized to access
+- Disk-space protection and concise live progress
+- Checksum-verified automatic standalone updates
 
-- Single-video MP4, WebM, MKV, original, MP3, M4A, Opus, FLAC, and WAV output
-- Best, bounded-resolution, exact-resolution, lowest, and audio-quality policies
-- Direct playlist URLs plus channel playlist discovery/selection, channel Videos, Shorts, Streams, and multi-source batches
-- First/last/range/latest/oldest and metric/date/title/duration filtering/sorting
-- Persistent SQLite metadata cache, jobs, history, retry, crash recovery, and resume
-- Source/profile, SHA-256, Chromaprint audio, and perceptual-video duplicate protection
-- Conservative variant handling: same audio does not make two visually different videos duplicates
-- Collision-safe filenames containing immutable source IDs
-- Runtime disk-space guard that pauses resumable jobs before the destination fills
-- Guided bare-`mdl` workflow with lightweight availability checks, clear examples, a clear confirmation before transfer, Videos/Shorts/Streams, searchable numbered channel playlists with one/many/all selection, available-only Everything for media tabs, first/latest/ranges/top-N choices, views/likes/date/duration/title filters, a quick maximum-duration skip for long uploads, format, and quality
-- Concise terminal transfer progress with bytes, speed, percentage, and ETA when available
-- Bounded concurrent DASH/HLS fragment fetching (4 by default), alongside conservative collection-worker limits for reliable throughput
-- Browser-cookie access for content the user is authorized to access
-- Standalone builds bundle a validated Deno runtime plus yt-dlp EJS for reliable modern YouTube challenge solving, so users do not need to install or upgrade Node/Deno; source/pip installs still accept supported Deno, Node 22+, QuickJS, or Bun runtimes
-- Automatic standalone update checks use the official latest-release manifest and SHA-256 verification; `mdl update --check` remains available for an explicit check
-- Daily dependency automation watches Python packages, GitHub Actions, and the bundled Deno runtime; dependency changes must pass the full six-platform release build before they are suitable for release
-- `mdl doctor`, checksum-verified standalone updates, and one-time per-user installers
-- Large-channel bounded scans and subquadratic smart-dedupe candidate screening
+## Automatic updates
 
-## Installation model
+Standalone installs periodically check the official MediaDL release feed. When a newer release is available, MediaDL downloads the correct platform build, verifies its SHA-256 checksum, and updates itself.
 
-Release binaries are standalone. After one-time installation, normal use is simply:
+A failed or offline update check never blocks the command you asked MediaDL to run.
 
-```bash
-mdl URL
-```
+Dependencies are monitored separately in the repository and must pass the full six-platform CI build before they are suitable for a MediaDL release.
 
-No virtual-environment activation, repository `cd`, background service, or repeated installation is required. Standalone installs perform a best-effort update check at most once every six hours; an offline or failed update check never blocks the requested command. Administrators can set `MEDIADL_DISABLE_AUTO_UPDATE=1` when centrally managing releases.
+Set `MEDIADL_DISABLE_AUTO_UPDATE=1` if releases are centrally managed on your system.
 
-FFmpeg is a required external media dependency for merge/conversion operations; ffprobe is used for probing and smart media fingerprinting. The standalone bundles its JavaScript runtime and EJS support, but not FFmpeg/ffprobe. MediaDL never silently replaces system FFmpeg; `mdl doctor` reports its status so the operating system's package manager remains authoritative.
+## Supported platforms
+
+Release builds are validated on:
+
+- Linux x86_64
+- Linux ARM64
+- Windows x86_64
+- Windows ARM64
+- macOS Intel
+- macOS Apple Silicon
 
 ## Documentation
 
-- `docs/SPECIFICATION.md` — v1 product behavior
-- `docs/ARCHITECTURE.md` — internal boundaries and persistence design
-- `docs/STAGES.md` — 20-stage completion record
-- `docs/LINUX_TEST.md` — first Linux user-validation checklist
+- [Specification](docs/SPECIFICATION.md)
+- [Architecture](docs/ARCHITECTURE.md)
+- [Development stages](docs/STAGES.md)
 
-## Safety and scope
+## License
 
-MediaDL is intended for media the user owns or has the right or permission to save. It supports authorized cookies where yt-dlp supports them and does not implement DRM bypassing.
+MIT. See [LICENSE](LICENSE).
+
+MediaDL is intended for media you own or have permission to save. It does not implement DRM bypassing.
