@@ -28,6 +28,10 @@ def test_public_argv_alias_preserves_simple_url_syntax_and_subcommands() -> None
         "recover-unavailable",
         "job-1",
     ]
+    assert cli_app._normalized_argv(["recover-failed", "job-1"]) == [
+        "recover-failed",
+        "job-1",
+    ]
     assert cli_app._normalized_argv(["--help"]) == ["--help"]
     assert cli_app._normalized_argv(["--version"]) == ["--version"]
     assert cli_app._normalized_argv([]) == []
@@ -43,6 +47,9 @@ def test_collection_worker_defaults_are_bounded_by_output_cost(
     assert cli_app._collection_worker_count(OutputFormat.MP3, None) == 3
     assert cli_app._collection_worker_count(OutputFormat.WAV, None) == 3
     assert cli_app._collection_worker_count(OutputFormat.MP4, None) == 3
+    assert cli_app._collection_worker_count(OutputFormat.M4A, None, authenticated=True) == 2
+    assert cli_app._collection_worker_count(OutputFormat.MP4, None, authenticated=True) == 2
+    assert cli_app._collection_worker_count(OutputFormat.M4A, 6, authenticated=True) == 6
     assert cli_app._collection_worker_count(OutputFormat.M4A, 6) == 6
     assert cli_app._collection_conversion_worker_count(OutputFormat.MP3) == 2
     assert cli_app._collection_conversion_worker_count(OutputFormat.FLAC) == 2
@@ -198,6 +205,46 @@ def test_recover_unavailable_cli_requeues_only_selected_job(
 
     assert result.exit_code == 0, result.output
     assert "Recovering 3 previously unavailable item(s)" in result.stdout
+    assert "downloaded=1" in result.stdout
+    assert FakeExecutor.runs == ["old-job"]
+
+
+def test_recover_failed_cli_requeues_only_final_failures_with_auth(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class RecoveryJobs:
+        def __init__(self, database: object) -> None:
+            pass
+
+        def recover_interrupted_jobs(self) -> tuple[str, ...]:
+            return ()
+
+        def recover_final_failures(self, job_id: str) -> int:
+            assert job_id == "old-job"
+            return 41
+
+        def load_plan(self, job_id: str) -> object:
+            assert job_id == "old-job"
+            return type("Plan", (), {"output_format": OutputFormat.M4A.value})()
+
+    FakeExecutor.runs = []
+    monkeypatch.setattr(cli_app, "ConfigStore", FakeConfigStore)
+    monkeypatch.setattr(cli_app, "configure_logging", lambda **_: object())
+    monkeypatch.setattr(cli_app, "_database", lambda: object())
+    monkeypatch.setattr(cli_app, "JobRepository", RecoveryJobs)
+    monkeypatch.setattr(cli_app, "_adapter", lambda **_: object())
+    monkeypatch.setattr(cli_app, "SingleDownloadService", lambda adapter: object())
+    monkeypatch.setattr(cli_app, "BasicDedupeService", lambda database: object())
+    monkeypatch.setattr(cli_app, "_smart_dedupe", lambda database: None)
+    monkeypatch.setattr(cli_app, "CollectionJobExecutor", FakeExecutor)
+
+    result = CliRunner().invoke(
+        cli_app.app,
+        ["recover-failed", "old-job", "--cookies-from-browser", "chrome"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Recovering 41 final-failed item(s)" in result.stdout
     assert "downloaded=1" in result.stdout
     assert FakeExecutor.runs == ["old-job"]
 

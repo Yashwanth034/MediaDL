@@ -18,7 +18,7 @@ For x86_64 Linux:
 ./dist/mdl-linux-x86_64 --help
 ```
 
-Expected version: `MediaDL 1.0.0`.
+Expected version: `MediaDL 1.0.1`.
 
 ## 3. Install once for your user
 

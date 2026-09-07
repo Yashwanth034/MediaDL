@@ -15,6 +15,11 @@ class FailureCategory(StrEnum):
     DELETED = "deleted"
     GEO_BLOCKED = "geo_blocked"
     AUTH_REQUIRED = "auth_required"
+    BOT_CHECK = "bot_check"
+    COOKIE_ACCESS = "cookie_access"
+    PO_TOKEN_REQUIRED = "po_token_required"
+    FORBIDDEN = "forbidden"
+    FILENAME_TOO_LONG = "filename_too_long"
     AGE_RESTRICTED = "age_restricted"
     LIVE_NOT_READY = "live_not_ready"
     DISK_SPACE = "disk_space"
@@ -41,6 +46,18 @@ class YtDlpFailureClassifier:
     def classify(message: str) -> FailureInfo:
         text = " ".join(str(message).strip().split())
         lower = text.casefold()
+
+        if _contains(
+            lower,
+            "file name too long",
+            "filename too long",
+            "errno 36",
+        ):
+            return FailureInfo(
+                FailureCategory.FILENAME_TOO_LONG,
+                False,
+                "The generated filename exceeded the filesystem component limit.",
+            )
 
         if _contains(
             lower,
@@ -85,9 +102,39 @@ class YtDlpFailureClassifier:
             )
         if _contains(
             lower,
-            "login required",
             "sign in to confirm you're not a bot",
             "sign in to confirm you’re not a bot",
+        ):
+            return FailureInfo(
+                FailureCategory.BOT_CHECK,
+                False,
+                "YouTube requested signed-in browser cookies to continue.",
+            )
+        if _contains(
+            lower,
+            "could not copy chrome cookie database",
+            "failed to decrypt with dpapi",
+            "failed to decrypt cookie",
+            "could not decrypt cookie",
+            "could not be decrypted",
+            "secretstorage not available",
+        ):
+            return FailureInfo(
+                FailureCategory.COOKIE_ACCESS,
+                False,
+                "Browser cookies could not be read or decrypted. Close Chromium completely if "
+                "its cookie database is locked; on Windows, use Firefox or a Netscape cookie "
+                "file when Chromium App-Bound cookies cannot be decrypted.",
+            )
+        if _contains(lower, "po token", "po_token", "proof of origin"):
+            return FailureInfo(
+                FailureCategory.PO_TOKEN_REQUIRED,
+                False,
+                "YouTube requires a compatible Proof-of-Origin (PO) token for this request.",
+            )
+        if _contains(
+            lower,
+            "login required",
             "cookies are required",
             "members-only",
             "members only",
@@ -104,6 +151,12 @@ class YtDlpFailureClassifier:
                 FailureCategory.RATE_LIMIT,
                 True,
                 "The service is rate-limiting requests; retry later with backoff.",
+            )
+        if _contains(lower, "http error 403", "403: forbidden", "403 forbidden"):
+            return FailureInfo(
+                FailureCategory.FORBIDDEN,
+                False,
+                "YouTube returned HTTP 403 Forbidden for this media request.",
             )
         if _HTTP_SERVER_RE.search(lower) or _contains(
             lower,

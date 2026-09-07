@@ -94,6 +94,10 @@ def main() -> int:
         str(spec),
         str(ROOT / "src" / "mediadl" / "__main__.py"),
     ]
+    if key.startswith("linux-"):
+        # yt-dlp uses SecretStorage to decrypt Chromium-family browser cookies
+        # through the Linux desktop keyring. Bundle it explicitly in standalone builds.
+        command.extend(["--collect-all", "secretstorage"])
     subprocess.run(command, cwd=ROOT, check=True)
     if not plain.is_file():
         raise SystemExit(f"PyInstaller did not create expected executable: {plain}")

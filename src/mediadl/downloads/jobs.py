@@ -46,6 +46,12 @@ _TRANSIENT_ITEM_STATUSES = {
     JobItemStatus.POSTPROCESSING,
     JobItemStatus.VERIFYING,
 }
+_RESTRICTED_SKIP_CATEGORIES = {
+    "auth_required",
+    "age_restricted",
+    "geo_blocked",
+    "drm",
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -130,6 +136,19 @@ class JobBreakdown:
     final_failed: int
     cancelled: int
     unavailable_reasons: tuple[tuple[str, int], ...] = ()
+    final_failure_reasons: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def skipped_restricted(self) -> int:
+        return sum(
+            count
+            for reason, count in self.unavailable_reasons
+            if _skip_reason_category(reason) in _RESTRICTED_SKIP_CATEGORIES
+        )
+
+    @property
+    def skipped_media_unavailable(self) -> int:
+        return max(0, self.skipped_unavailable - self.skipped_restricted)
 
 
 class JobRepository:
@@ -309,8 +328,12 @@ class JobRepository:
                 (JobStatus.PAUSED.value, job_id),
             )
 
-    def interrupt_job(self, job_id: str) -> None:
-        """Pause a running job after Ctrl+C without consuming a retry attempt."""
+    def interrupt_job(self, job_id: str, *, detail: str = "Interrupted by user") -> None:
+        """Pause a running job without consuming an attempt, preserving why it paused."""
+
+        pause_detail = detail.strip()
+        if not pause_detail:
+            raise InputError("Interrupted-job detail cannot be empty")
 
         with self.database.transaction() as connection:
             status = self._job_status(connection, job_id)
@@ -324,12 +347,12 @@ class JobRepository:
                 SET status = ?,
                     attempts = CASE WHEN attempts > 0 THEN attempts - 1 ELSE 0 END,
                     retry_after_at = NULL,
-                    last_error = 'Interrupted by user',
+                    last_error = ?,
                     completed_at = NULL,
                     updated_at = CURRENT_TIMESTAMP
                 WHERE job_id = ? AND status IN ({placeholders})
                 """,
-                (JobItemStatus.PENDING.value, job_id, *transient_values),
+                (JobItemStatus.PENDING.value, pause_detail, job_id, *transient_values),
             )
             connection.execute(
                 """
@@ -651,6 +674,49 @@ class JobRepository:
             )
             return len(item_ids)
 
+    def recover_final_failures(self, job_id: str) -> int:
+        """Explicitly requeue final failures so they can be retried under corrected access state."""
+
+        with self.database.transaction() as connection:
+            status = self._job_status(connection, job_id)
+            if status is JobStatus.RUNNING:
+                raise InputError(f"Job {job_id} is currently running")
+            rows = connection.execute(
+                "SELECT id FROM job_items WHERE job_id = ? AND status = ? ORDER BY position",
+                (job_id, JobItemStatus.FAILED_FINAL.value),
+            ).fetchall()
+            item_ids = [int(row[0]) for row in rows]
+            if not item_ids:
+                return 0
+            placeholders = ",".join("?" for _ in item_ids)
+            connection.execute(
+                f"""
+                UPDATE job_items
+                SET status = ?, attempts = 0, retry_after_at = NULL,
+                    last_error = NULL, output_path = NULL, completed_at = NULL,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id IN ({placeholders})
+                """,
+                (JobItemStatus.PENDING.value, *item_ids),
+            )
+            connection.execute(
+                f"""
+                UPDATE failures
+                SET resolved_at = CURRENT_TIMESTAMP
+                WHERE resolved_at IS NULL AND job_item_id IN ({placeholders})
+                """,
+                tuple(item_ids),
+            )
+            connection.execute(
+                """
+                UPDATE jobs
+                SET status = ?, completed_at = NULL, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (JobStatus.PAUSED.value, job_id),
+            )
+            return len(item_ids)
+
     def recover_interrupted_jobs(self) -> tuple[str, ...]:
         with self.database.transaction() as connection:
             rows = connection.execute(
@@ -725,6 +791,25 @@ class JobRepository:
                 """,
                 (job_id, JobItemStatus.SKIPPED_UNAVAILABLE.value),
             ).fetchall()
+            final_failure_rows = connection.execute(
+                """
+                SELECT
+                    COALESCE(NULLIF(f.category, ''), 'unknown') || ': ' ||
+                    COALESCE(
+                        NULLIF(f.message, ''),
+                        NULLIF(ji.last_error, ''),
+                        'reason not recorded'
+                    ),
+                    COUNT(DISTINCT ji.id)
+                FROM job_items ji
+                LEFT JOIN failures f
+                  ON f.job_item_id = ji.id AND f.resolved_at IS NULL
+                WHERE ji.job_id = ? AND ji.status = ?
+                GROUP BY 1
+                ORDER BY COUNT(DISTINCT ji.id) DESC, 1
+                """,
+                (job_id, JobItemStatus.FAILED_FINAL.value),
+            ).fetchall()
         counts = {str(row[0]): int(row[1]) for row in rows}
         return JobBreakdown(
             job_id=job_id,
@@ -741,6 +826,9 @@ class JobRepository:
             final_failed=counts.get(JobItemStatus.FAILED_FINAL.value, 0),
             cancelled=counts.get(JobItemStatus.CANCELLED.value, 0),
             unavailable_reasons=tuple((str(row[0]), int(row[1])) for row in unavailable_rows),
+            final_failure_reasons=tuple(
+                (str(row[0]), int(row[1])) for row in final_failure_rows
+            ),
         )
 
     def progress(self, job_id: str) -> JobProgress:
@@ -879,6 +967,11 @@ class JobRepository:
             (final_status.value, job_id),
         )
         return final_status
+
+
+def _skip_reason_category(reason: str) -> str:
+    category, separator, _ = reason.partition(":")
+    return category.strip().casefold() if separator else ""
 
 
 def _utc(value: datetime | None) -> datetime:

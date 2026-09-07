@@ -126,7 +126,16 @@ def test_network_policy_rejects_invalid_values() -> None:
         ("Video has been removed", FailureCategory.DELETED, False),
         ("This video is not available in your country", FailureCategory.GEO_BLOCKED, False),
         ("Sign in to confirm your age", FailureCategory.AGE_RESTRICTED, False),
-        ("Sign in to confirm you're not a bot", FailureCategory.AUTH_REQUIRED, False),
+        ("Sign in to confirm you're not a bot", FailureCategory.BOT_CHECK, False),
+        ("Could not copy Chrome cookie database", FailureCategory.COOKIE_ACCESS, False),
+        ("failed to decrypt cookie (AES-GCM)", FailureCategory.COOKIE_ACCESS, False),
+        ("ios client formats require a GVS PO Token", FailureCategory.PO_TOKEN_REQUIRED, False),
+        ("HTTP Error 403: Forbidden", FailureCategory.FORBIDDEN, False),
+        (
+            "unable to open for writing: [Errno 36] File name too long",
+            FailureCategory.FILENAME_TOO_LONG,
+            False,
+        ),
         ("This video is DRM protected", FailureCategory.DRM, False),
         (
             "Download paused because free disk space fell below the safety reserve",
@@ -242,3 +251,65 @@ def test_adapter_surfaces_permanent_category(monkeypatch: pytest.MonkeyPatch) ->
     assert caught.value.category == "private"
     assert caught.value.retryable is False
     assert caught.value.exit_code == 7
+
+
+def test_adapter_promotes_403_to_po_token_when_warning_precedes_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeEngineError(Exception):
+        pass
+
+    class WarningYDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            self.options = options
+
+        def __enter__(self) -> "WarningYDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+        def extract_info(self, url: str, *, download: bool) -> dict[str, object]:
+            logger = self.options["logger"]
+            logger.warning("ios client formats require a GVS PO Token")  # type: ignore[attr-defined]
+            raise FakeEngineError("HTTP Error 403: Forbidden")
+
+    monkeypatch.setattr(ytdlp_module, "_YtDlpDownloadError", FakeEngineError)
+    adapter = YtDlpAdapter(ydl_factory=WarningYDL)
+
+    with pytest.raises(DownloadError) as caught:
+        adapter.extract_info("https://example.invalid/watch?v=abc")
+
+    assert caught.value.category == "po_token_required"
+    assert "PO-token" in str(caught.value)
+
+
+def test_adapter_reports_cookie_access_when_decryption_warning_precedes_bot_check(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeEngineError(Exception):
+        pass
+
+    class WarningYDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            self.options = options
+
+        def __enter__(self) -> "WarningYDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+            return None
+
+        def extract_info(self, url: str, *, download: bool) -> dict[str, object]:
+            logger = self.options["logger"]
+            logger.warning("failed to decrypt cookie (AES-GCM)")  # type: ignore[attr-defined]
+            raise FakeEngineError("Sign in to confirm you're not a bot")
+
+    monkeypatch.setattr(ytdlp_module, "_YtDlpDownloadError", FakeEngineError)
+    adapter = YtDlpAdapter(ydl_factory=WarningYDL)
+
+    with pytest.raises(DownloadError) as caught:
+        adapter.extract_info("https://example.invalid/watch?v=abc")
+
+    assert caught.value.category == "cookie_access"
+    assert "cookies" in str(caught.value).casefold()

@@ -59,6 +59,7 @@ def sanitize_component(
 
     if len(normalized) > max_length:
         normalized = normalized[:max_length].rstrip(" .-")
+    normalized = _truncate_utf8(normalized, max_length).rstrip(" .-")
 
     return normalized or fallback
 
@@ -92,16 +93,15 @@ def build_media_filename(
     prefix = _date_prefix(upload_date)
 
     fixed = f"{prefix}[{clean_id}].{clean_extension}"
-    minimum_length = len(fixed) + 3
+    minimum_length = _utf8_length(fixed) + 17
     if max_length < minimum_length:
         raise InputError("Filename limit is too small to preserve the source ID")
-    title_budget = max(16, max_length - len(fixed) - 1)
+    title_budget = max_length - _utf8_length(fixed) - 1
     clean_title = sanitize_component(title, max_length=title_budget)
     filename = f"{prefix}{clean_title} [{clean_id}].{clean_extension}"
 
-    if len(filename) > max_length:
-        overflow = len(filename) - max_length
-        clean_title = clean_title[: max(1, len(clean_title) - overflow)].rstrip(" .-")
+    if _utf8_length(filename) > max_length:
+        clean_title = _truncate_utf8(clean_title, title_budget).rstrip(" .-")
         filename = f"{prefix}{clean_title} [{clean_id}].{clean_extension}"
     return filename
 
@@ -129,14 +129,30 @@ class FilenamePolicy:
         if self.max_filename_length < 80:
             raise InputError("Filename limit must be at least 80 characters")
         output_dir = output_dir.expanduser().resolve(strict=False)
+        # yt-dlp's ``B`` conversion applies precision to UTF-8 bytes rather than
+        # Unicode code points. This matters on filesystems such as ext4 where a
+        # single path component is limited to 255 bytes; e.g. Telugu characters
+        # commonly use three UTF-8 bytes each. Reserve ample space for the source
+        # ID, extension, and temporary suffixes such as ``.part``.
         title_limit = min(160, self.max_filename_length - 60)
-        template_name = f"%(title).{title_limit}s [%(id)s].%(ext)s"
+        template_name = f"%(title).{title_limit}B [%(id)s].%(ext)s"
         output_template = str(output_dir / template_name)
         return {
             "outtmpl": output_template,
             "windowsfilenames": True,
             "trim_file_name": self.max_filename_length,
         }
+
+
+def _utf8_length(value: str) -> int:
+    return len(value.encode("utf-8"))
+
+
+def _truncate_utf8(value: str, max_bytes: int) -> str:
+    encoded = value.encode("utf-8")
+    if len(encoded) <= max_bytes:
+        return value
+    return encoded[:max_bytes].decode("utf-8", "ignore")
 
 
 def _clean_extension(extension: str) -> str:

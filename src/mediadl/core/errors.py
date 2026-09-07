@@ -50,7 +50,11 @@ class DownloadError(MediaDLError):
         *,
         retryable: bool = False,
         category: str = "download",
+        detail: str | None = None,
     ) -> None:
         super().__init__(message, 6 if retryable else 7)
         self.retryable = retryable
         self.category = category
+        # Optional redacted engine detail is persisted for diagnostics while the
+        # normal exception string remains concise and user-facing.
+        self.detail = detail

@@ -94,6 +94,14 @@ def test_windows_installer_contains_user_path_and_pre_replace_smoke_check() -> N
     assert "Move-Item -LiteralPath $Temp -Destination $Target -Force" in script
 
 
+def test_linux_browser_cookie_support_is_packaged() -> None:
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    builder = (ROOT / "packaging" / "build_standalone.py").read_text(encoding="utf-8")
+
+    assert "secretstorage>=3.3,<4" in pyproject
+    assert 'command.extend(["--collect-all", "secretstorage"])' in builder
+
+
 def test_standalone_builder_help_does_not_require_pyinstaller_to_be_installed() -> None:
     result = subprocess.run(
         [sys.executable, str(ROOT / "packaging" / "build_standalone.py"), "--help"],

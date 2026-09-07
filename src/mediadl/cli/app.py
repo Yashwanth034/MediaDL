@@ -100,14 +100,18 @@ def _dedupe_mode(config: AppConfig, value: DedupeMode | None) -> DedupeMode:
 def _collection_worker_count(
     output_format: OutputFormat,
     requested: int | None,
+    *,
+    authenticated: bool = False,
 ) -> int:
-    """Choose bounded parallelism without overloading FFmpeg-heavy formats."""
+    """Choose bounded parallelism, using gentler defaults for signed-in YouTube sessions."""
 
     if requested is not None:
         if requested < 1 or requested > 8:
             raise InputError("--jobs must be between 1 and 8")
         return requested
     cpu_count = max(1, os.cpu_count() or 1)
+    if authenticated:
+        return min(2, cpu_count)
     if output_format in {OutputFormat.M4A, OutputFormat.OPUS}:
         return min(4, cpu_count)
     if output_format in {OutputFormat.MP3, OutputFormat.FLAC, OutputFormat.WAV}:
@@ -193,14 +197,18 @@ def _adapter(
     cookie_file: Path | None,
     retries: int,
 ) -> YtDlpAdapter:
+    auth = AuthConfig(
+        browser=browser,
+        browser_profile=browser_profile,
+        cookie_file=cookie_file,
+    )
     return YtDlpAdapter(
         logger=logger,  # type: ignore[arg-type]
-        auth=AuthConfig(
-            browser=browser,
-            browser_profile=browser_profile,
-            cookie_file=cookie_file,
+        auth=auth,
+        network_policy=NetworkPolicy(
+            retries=retries,
+            request_sleep_seconds=0.25 if auth.enabled else 0.0,
         ),
-        network_policy=NetworkPolicy(retries=retries),
     )
 
 
@@ -620,7 +628,11 @@ def download(
                 collection_dedupe,
                 smart_dedupe=smart_dedupe,
                 progress_observer=progress.observe,
-                max_workers=_collection_worker_count(selected_format, parallel_jobs),
+                max_workers=_collection_worker_count(
+                    selected_format,
+                    parallel_jobs,
+                    authenticated=browser is not None or cookie_file is not None,
+                ),
                 conversion_workers=_collection_conversion_worker_count(selected_format),
             ).run(plan.plan_id)
         _render_execution(summary)
@@ -676,7 +688,11 @@ def resume(
             BasicDedupeService(database),
             smart_dedupe=_smart_dedupe(database),
             progress_observer=progress.observe,
-            max_workers=_collection_worker_count(selected_format, parallel_jobs),
+            max_workers=_collection_worker_count(
+                selected_format,
+                parallel_jobs,
+                authenticated=browser is not None or cookie_file is not None,
+            ),
             conversion_workers=_collection_conversion_worker_count(selected_format),
         ).run(selected)
     _render_execution(summary)
@@ -774,7 +790,66 @@ def recover_unavailable(
             BasicDedupeService(database),
             smart_dedupe=_smart_dedupe(database),
             progress_observer=progress.observe,
-            max_workers=_collection_worker_count(selected_format, parallel_jobs),
+            max_workers=_collection_worker_count(
+                selected_format,
+                parallel_jobs,
+                authenticated=browser is not None or cookie_file is not None,
+            ),
+            conversion_workers=_collection_conversion_worker_count(selected_format),
+        ).run(job_id)
+    _render_execution(summary)
+    issue = _execution_issue(summary)
+    if issue is not None:
+        raise MediaDLError(issue, 1)
+
+
+@app.command(name="recover-failed")
+def recover_failed(
+    job_id: Annotated[
+        str, typer.Argument(help="Completed job ID whose final failures should be retried.")
+    ],
+    browser: Annotated[
+        str | None,
+        typer.Option("--cookies-from-browser", help="Use authorized browser cookies."),
+    ] = None,
+    browser_profile: Annotated[str | None, typer.Option("--browser-profile")] = None,
+    cookie_file: Annotated[Path | None, typer.Option("--cookies")] = None,
+    parallel_jobs: Annotated[
+        int | None,
+        typer.Option("--jobs", min=1, max=8, help="Parallel collection items."),
+    ] = None,
+) -> None:
+    """Explicitly retry only final-failed items from one completed collection job."""
+
+    config = ConfigStore().load()
+    logger = configure_logging(verbose=config.verbose)
+    database = _database()
+    jobs = JobRepository(database)
+    jobs.recover_interrupted_jobs()
+    count = jobs.recover_final_failures(job_id)
+    if count == 0:
+        raise InputError(f"Job {job_id} has no final failures to recover")
+    console.print(f"Recovering {count} final-failed item(s)…")
+    adapter = _adapter(
+        logger=logger,
+        browser=browser,
+        browser_profile=browser_profile,
+        cookie_file=cookie_file,
+        retries=5,
+    )
+    selected_format = OutputFormat(jobs.load_plan(job_id).output_format)
+    with TerminalDownloadProgress(console) as progress:
+        summary = CollectionJobExecutor(
+            jobs,
+            SingleDownloadService(adapter),
+            BasicDedupeService(database),
+            smart_dedupe=_smart_dedupe(database),
+            progress_observer=progress.observe,
+            max_workers=_collection_worker_count(
+                selected_format,
+                parallel_jobs,
+                authenticated=browser is not None or cookie_file is not None,
+            ),
             conversion_workers=_collection_conversion_worker_count(selected_format),
         ).run(job_id)
     _render_execution(summary)
@@ -1063,6 +1138,7 @@ def _render_execution(summary: ExecutionSummary) -> None:
         f"downloaded={summary.completed} "
         f"duplicate={summary.skipped_duplicate} "
         f"unavailable={summary.skipped_unavailable} "
+        f"restricted={summary.skipped_restricted} "
         f"failed={summary.failed}"
     )
     if summary.status is JobStatus.PAUSED:
@@ -1077,7 +1153,8 @@ def _render_job_breakdown(breakdown: JobBreakdown) -> None:
     table.add_row("Total", str(breakdown.total))
     table.add_row("Downloaded", str(breakdown.completed))
     table.add_row("Duplicate", str(breakdown.skipped_duplicate))
-    table.add_row("Unavailable", str(breakdown.skipped_unavailable))
+    table.add_row("Unavailable", str(breakdown.skipped_media_unavailable))
+    table.add_row("Restricted", str(breakdown.skipped_restricted))
     table.add_row("Retryable failed", str(breakdown.retryable_failed))
     table.add_row("Final failed", str(breakdown.final_failed))
     table.add_row("Pending", str(breakdown.pending))
@@ -1087,12 +1164,19 @@ def _render_job_breakdown(breakdown: JobBreakdown) -> None:
     table.add_row("Cancelled", str(breakdown.cancelled))
     console.print(table)
     if breakdown.unavailable_reasons:
-        reasons = Table(title="Unavailable reasons", show_header=True, box=None)
+        reasons = Table(title="Skipped reasons", show_header=True, box=None)
         reasons.add_column("Count", justify="right")
         reasons.add_column("Reason")
         for reason, count in breakdown.unavailable_reasons:
             reasons.add_row(str(count), reason)
         console.print(reasons)
+    if breakdown.final_failure_reasons:
+        failures = Table(title="Final failure reasons", show_header=True, box=None)
+        failures.add_column("Count", justify="right")
+        failures.add_column("Reason")
+        for reason, count in breakdown.final_failure_reasons:
+            failures.add_row(str(count), reason)
+        console.print(failures)
 
 
 def _add_history_row(table: Table, record: JobRecord) -> None:
@@ -1123,6 +1207,7 @@ _KNOWN_COMMANDS = {
     "resume",
     "retry",
     "recover-unavailable",
+    "recover-failed",
     "history",
     "job",
     "update",

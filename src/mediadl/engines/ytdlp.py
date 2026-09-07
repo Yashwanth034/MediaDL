@@ -45,6 +45,15 @@ _EXTRACTION_WARNING_MARKERS = (
     "incomplete data received in embedded initial data",
     "no title found in player responses",
 )
+_PO_TOKEN_WARNING_MARKERS = ("po token", "po_token", "proof of origin")
+_COOKIE_WARNING_MARKERS = (
+    "could not copy chrome cookie database",
+    "failed to decrypt with dpapi",
+    "failed to decrypt cookie",
+    "could not decrypt cookie",
+    "could not be decrypted",
+    "secretstorage not available",
+)
 
 
 class _YtDlpLogger:
@@ -53,6 +62,8 @@ class _YtDlpLogger:
     def __init__(self, logger: logging.Logger) -> None:
         self.logger = logger
         self.extraction_warning = False
+        self.po_token_warning = False
+        self.cookie_warning = False
 
     def debug(self, message: str) -> None:
         self._write(logging.DEBUG, message)
@@ -71,6 +82,10 @@ class _YtDlpLogger:
         lower = redacted.casefold()
         if any(marker in lower for marker in _EXTRACTION_WARNING_MARKERS):
             self.extraction_warning = True
+        if any(marker in lower for marker in _PO_TOKEN_WARNING_MARKERS):
+            self.po_token_warning = True
+        if any(marker in lower for marker in _COOKIE_WARNING_MARKERS):
+            self.cookie_warning = True
         self.logger.log(level, "yt-dlp: %s", redacted)
 
 
@@ -184,16 +199,32 @@ class YtDlpAdapter:
             raw_message = redact_text(exc)
             failure = YtDlpFailureClassifier.classify(raw_message)
             bridge = options.get("logger")
-            if (
-                failure.category is FailureCategory.UNAVAILABLE
-                and isinstance(bridge, _YtDlpLogger)
-                and bridge.extraction_warning
-            ):
-                failure = FailureInfo(
-                    FailureCategory.EXTRACTOR,
-                    False,
-                    "YouTube extraction failed before availability could be determined.",
-                )
+            if isinstance(bridge, _YtDlpLogger):
+                if failure.category is FailureCategory.FORBIDDEN and bridge.po_token_warning:
+                    failure = FailureInfo(
+                        FailureCategory.PO_TOKEN_REQUIRED,
+                        False,
+                        "YouTube rejected playback with HTTP 403 after a PO-token warning. "
+                        "A compatible yt-dlp PO-token provider/configuration is required.",
+                    )
+                elif failure.category is FailureCategory.BOT_CHECK and bridge.cookie_warning:
+                    failure = FailureInfo(
+                        FailureCategory.COOKIE_ACCESS,
+                        False,
+                        "Browser cookies were requested but could not be read or decrypted. "
+                        "Close Chromium completely if its cookie database is locked; on Windows, "
+                        "use Firefox or a Netscape cookie file when Chromium App-Bound cookies "
+                        "cannot be decrypted.",
+                    )
+                elif (
+                    failure.category is FailureCategory.UNAVAILABLE
+                    and bridge.extraction_warning
+                ):
+                    failure = FailureInfo(
+                        FailureCategory.EXTRACTOR,
+                        False,
+                        "YouTube extraction failed before availability could be determined.",
+                    )
             self.logger.debug(
                 "yt-dlp failure classified as %s (retryable=%s): %s",
                 failure.category.value,
@@ -204,6 +235,7 @@ class YtDlpAdapter:
                 failure.user_message,
                 retryable=failure.retryable,
                 category=failure.category.value,
+                detail=raw_message,
             ) from exc
         except OSError as exc:
             raise DownloadError(

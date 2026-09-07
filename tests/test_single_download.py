@@ -59,7 +59,7 @@ def test_mp4_single_download_builds_quality_policy(tmp_path: Path) -> None:
     assert options["continuedl"] is True
     assert options["merge_output_format"] == "mp4"
     assert "[height<=1080]" in options["format"]
-    assert "%(title).160s" in options["outtmpl"]
+    assert "%(title).160B" in options["outtmpl"]
     assert "[%(id)s].%(ext)s" in options["outtmpl"]
 
 
