@@ -12,7 +12,7 @@ license = {text = "MIT"}
 authors = [{name = "MediaDL contributors"}]
 dependencies = [
   "platformdirs>=4.2,<5",
-  "rich>=13.7,<15",
+  "rich>=13.7,<16",
   "secretstorage>=3.3,<4; sys_platform == 'linux'",
   "typer>=0.12,<1",
   "yt-dlp[default]>=2026.8.19,<2027",
