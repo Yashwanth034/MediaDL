@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from mediadl.core.errors import DownloadError, UserCancelledError
+from mediadl.core.errors import DownloadError, MediaDLError, UserCancelledError
 from mediadl.core.formats import OutputFormat
 from mediadl.core.policies import DedupeMode
 from mediadl.dedupe.basic import BasicDedupeService
@@ -153,6 +153,123 @@ def test_executor_skips_permanent_unavailable_failure_and_continues(
     assert summary.completed == 1
     assert summary.skipped == 1
     assert len(downloader.requests) == 2
+
+
+def test_restricted_skip_is_not_reported_as_media_unavailable(
+    setup: tuple[JobRepository, BasicDedupeService, FakeDownloader],
+) -> None:
+    jobs, dedupe, downloader = setup
+    downloader.errors["https://www.youtube.com/watch?v=a"] = DownloadError(
+        "This media requires authorized signed-in access.",
+        retryable=False,
+        category="auth_required",
+    )
+
+    summary = CollectionJobExecutor(jobs, downloader, dedupe).run("executor-job")  # type: ignore[arg-type]
+
+    assert summary.status is JobStatus.COMPLETED
+    assert summary.skipped == 1
+    assert summary.skipped_unavailable == 0
+    assert summary.skipped_restricted == 1
+    breakdown = jobs.job_breakdown("executor-job")
+    assert breakdown.skipped_media_unavailable == 0
+    assert breakdown.skipped_restricted == 1
+
+
+def test_executor_persists_redacted_engine_detail_for_final_failures(
+    setup: tuple[JobRepository, BasicDedupeService, FakeDownloader],
+) -> None:
+    jobs, dedupe, downloader = setup
+    downloader.errors["https://www.youtube.com/watch?v=a"] = DownloadError(
+        "The media request failed with an unclassified error.",
+        retryable=False,
+        category="unknown",
+        detail="ERROR: [youtube] a: synthetic raw engine detail",
+    )
+
+    summary = CollectionJobExecutor(jobs, downloader, dedupe).run("executor-job")  # type: ignore[arg-type]
+
+    assert summary.status is JobStatus.COMPLETED_WITH_FAILURES
+    breakdown = jobs.job_breakdown("executor-job")
+    assert breakdown.final_failed == 1
+    assert breakdown.final_failure_reasons == (
+        ("unknown: ERROR: [youtube] a: synthetic raw engine detail", 1),
+    )
+
+
+def test_executor_pauses_immediately_on_youtube_bot_check(
+    setup: tuple[JobRepository, BasicDedupeService, FakeDownloader],
+) -> None:
+    jobs, dedupe, downloader = setup
+    downloader.errors["https://www.youtube.com/watch?v=a"] = DownloadError(
+        "YouTube requested signed-in browser cookies to continue.",
+        retryable=False,
+        category="bot_check",
+    )
+
+    with pytest.raises(MediaDLError, match="signed-in browser cookies"):
+        CollectionJobExecutor(jobs, downloader, dedupe).run("executor-job")  # type: ignore[arg-type]
+
+    breakdown = jobs.job_breakdown("executor-job")
+    assert breakdown.status is JobStatus.PAUSED
+    assert breakdown.skipped_unavailable == 0
+    assert breakdown.pending == 2
+    assert len(downloader.requests) == 1
+    with jobs.database.connection() as connection:
+        paused_errors = connection.execute(
+            "SELECT last_error FROM job_items WHERE job_id = ? AND last_error IS NOT NULL",
+            ("executor-job",),
+        ).fetchall()
+    assert [str(row[0]) for row in paused_errors] == [
+        "Paused for access requirement: YouTube requested signed-in browser cookies to continue."
+    ]
+
+
+@pytest.mark.parametrize(
+    ("category", "message"),
+    [
+        ("cookie_access", "Browser cookies could not be read or decrypted."),
+        ("po_token_required", "YouTube requires a compatible Proof-of-Origin token."),
+    ],
+)
+def test_executor_pauses_on_access_prerequisites(
+    setup: tuple[JobRepository, BasicDedupeService, FakeDownloader],
+    category: str,
+    message: str,
+) -> None:
+    jobs, dedupe, downloader = setup
+    downloader.errors["https://www.youtube.com/watch?v=a"] = DownloadError(
+        message,
+        retryable=False,
+        category=category,
+    )
+
+    with pytest.raises(MediaDLError, match="paused this job"):
+        CollectionJobExecutor(jobs, downloader, dedupe).run("executor-job")  # type: ignore[arg-type]
+
+    breakdown = jobs.job_breakdown("executor-job")
+    assert breakdown.status is JobStatus.PAUSED
+    assert breakdown.skipped_unavailable == 0
+    assert breakdown.pending == 2
+
+
+def test_parallel_executor_pauses_on_youtube_bot_check_without_false_unavailable(
+    setup: tuple[JobRepository, BasicDedupeService, FakeDownloader],
+) -> None:
+    jobs, dedupe, downloader = setup
+    downloader.errors["https://www.youtube.com/watch?v=a"] = DownloadError(
+        "YouTube requested signed-in browser cookies to continue.",
+        retryable=False,
+        category="bot_check",
+    )
+
+    with pytest.raises(MediaDLError, match="signed-in browser cookies"):
+        CollectionJobExecutor(jobs, downloader, dedupe, max_workers=2).run("executor-job")  # type: ignore[arg-type]
+
+    breakdown = jobs.job_breakdown("executor-job")
+    assert breakdown.status is JobStatus.PAUSED
+    assert breakdown.skipped_unavailable == 0
+    assert breakdown.pending >= 1
 
 
 def test_executor_pauses_when_retryable_failure_is_waiting(

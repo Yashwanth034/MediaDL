@@ -235,6 +235,48 @@ def test_recover_unavailable_requeues_only_unavailable_items(
     assert repository.complete_item(retry.job_item_id, output_path="c.mp4") is JobStatus.COMPLETED
 
 
+def test_recover_final_failures_requeues_only_final_failed_items(
+    repository: JobRepository,
+    tmp_path: Path,
+) -> None:
+    repository.create_job(plan(tmp_path, keys=("a", "b")))
+    repository.start_job("job-1")
+
+    completed = repository.claim_next("job-1")
+    assert completed is not None
+    repository.complete_item(completed.job_item_id, output_path="a.mp4")
+
+    failed = repository.claim_next("job-1")
+    assert failed is not None
+    repository.fail_item(
+        failed.job_item_id,
+        category="unknown",
+        message="old final failure",
+        retryable=False,
+        policy=RetryPolicy(),
+    )
+
+    before = repository.job_breakdown("job-1")
+    assert before.status is JobStatus.COMPLETED_WITH_FAILURES
+    assert before.completed == 1
+    assert before.final_failed == 1
+
+    assert repository.recover_final_failures("job-1") == 1
+    recovered = repository.job_breakdown("job-1")
+    assert recovered.status is JobStatus.PAUSED
+    assert recovered.completed == 1
+    assert recovered.final_failed == 0
+    assert recovered.pending == 1
+    assert recovered.final_failure_reasons == ()
+
+    repository.start_job("job-1")
+    retry = repository.claim_next("job-1")
+    assert retry is not None
+    assert retry.media_key == "b"
+    assert retry.attempts == 1
+    assert repository.complete_item(retry.job_item_id, output_path="b.mp4") is JobStatus.COMPLETED
+
+
 def test_interrupted_transient_item_recovers_to_paused_job_and_resumes(
     database: Database,
     tmp_path: Path,

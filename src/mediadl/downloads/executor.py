@@ -44,6 +44,7 @@ class ExecutionSummary:
     failed: int
     skipped_duplicate: int = 0
     skipped_unavailable: int = 0
+    skipped_restricted: int = 0
 
 
 DiskGuardFactory = Callable[[Path], DiskSpaceGuard]
@@ -67,6 +68,24 @@ class _ConvertedAudioWork:
 
 class _ParallelCancelled(Exception):
     """Internal cooperative stop used by parallel collection workers."""
+
+
+_ACCESS_PAUSE_CATEGORIES = {"bot_check", "cookie_access", "po_token_required"}
+
+
+class _AccessPauseRequested(Exception):
+    """Internal signal that continuing would create a burst of access-related failures."""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        self.message = message
+
+
+def _access_pause_error(job_id: str, message: str) -> MediaDLError:
+    return MediaDLError(
+        f"{message} MediaDL paused this job to avoid marking or failing many more items. "
+        f"Fix the access requirement, then resume with: mdl resume {job_id}"
+    )
 
 
 class _BatchProgressState:
@@ -292,6 +311,12 @@ class CollectionJobExecutor:
                     f"Cancelled by user. Resume later with: mdl resume {job_id}"
                 ) from None
             except DownloadError as exc:
+                if exc.category in _ACCESS_PAUSE_CATEGORIES:
+                    self.jobs.interrupt_job(
+                        job_id,
+                        detail=f"Paused for access requirement: {exc}",
+                    )
+                    raise _access_pause_error(job_id, str(exc)) from None
                 if exc.category in {
                     "private",
                     "deleted",
@@ -312,7 +337,7 @@ class CollectionJobExecutor:
                 status = self.jobs.fail_item(
                     claimed.job_item_id,
                     category=exc.category,
-                    message=str(exc),
+                    message=_persisted_failure_message(exc),
                     retryable=exc.retryable,
                     policy=self.retry_policy,
                 )
@@ -322,7 +347,7 @@ class CollectionJobExecutor:
                 status = self.jobs.fail_item(
                     claimed.job_item_id,
                     category="local",
-                    message=str(exc),
+                    message=_persisted_failure_message(exc),
                     retryable=False,
                     policy=self.retry_policy,
                 )
@@ -404,6 +429,10 @@ class CollectionJobExecutor:
                     continue
 
         def resolve_download_failure(claimed: QueueItem, exc: DownloadError) -> None:
+            if exc.category in _ACCESS_PAUSE_CATEGORIES:
+                stop_event.set()
+                batch_progress.released(claimed.position)
+                raise _AccessPauseRequested(str(exc)) from None
             if exc.category in {
                 "private",
                 "deleted",
@@ -425,7 +454,7 @@ class CollectionJobExecutor:
             self.jobs.fail_item(
                 claimed.job_item_id,
                 category=exc.category,
-                message=str(exc),
+                message=_persisted_failure_message(exc),
                 retryable=exc.retryable,
                 policy=self.retry_policy,
             )
@@ -730,12 +759,19 @@ class CollectionJobExecutor:
             stop_event.set()
             state_changed.set()
             self._join_all_workers(threads)
-            self.jobs.interrupt_job(job_id)
             error = worker_errors[0]
             if isinstance(error, KeyboardInterrupt):
+                self.jobs.interrupt_job(job_id)
                 raise UserCancelledError(
                     f"Cancelled by user. Resume later with: mdl resume {job_id}"
                 ) from None
+            if isinstance(error, _AccessPauseRequested):
+                self.jobs.interrupt_job(
+                    job_id,
+                    detail=f"Paused for access requirement: {error.message}",
+                )
+                raise _access_pause_error(job_id, error.message) from None
+            self.jobs.interrupt_job(job_id, detail="Paused after an internal worker error")
             raise error
 
         progress = self.jobs.progress(job_id)
@@ -828,12 +864,19 @@ class CollectionJobExecutor:
         if worker_errors:
             stop_event.set()
             self._join_all_workers(threads)
-            self.jobs.interrupt_job(job_id)
             error = worker_errors[0]
             if isinstance(error, KeyboardInterrupt):
+                self.jobs.interrupt_job(job_id)
                 raise UserCancelledError(
                     f"Cancelled by user. Resume later with: mdl resume {job_id}"
                 ) from None
+            if isinstance(error, _AccessPauseRequested):
+                self.jobs.interrupt_job(
+                    job_id,
+                    detail=f"Paused for access requirement: {error.message}",
+                )
+                raise _access_pause_error(job_id, error.message) from None
+            self.jobs.interrupt_job(job_id, detail="Paused after an internal worker error")
             raise error
 
         progress = self.jobs.progress(job_id)
@@ -961,6 +1004,10 @@ class CollectionJobExecutor:
             batch_progress.released(position)
             raise
         except DownloadError as exc:
+            if exc.category in _ACCESS_PAUSE_CATEGORIES:
+                stop_event.set()
+                batch_progress.released(position)
+                raise _AccessPauseRequested(str(exc)) from None
             if stop_event.is_set():
                 batch_progress.released(position)
                 raise _ParallelCancelled from None
@@ -984,7 +1031,7 @@ class CollectionJobExecutor:
             self.jobs.fail_item(
                 claimed.job_item_id,
                 category=exc.category,
-                message=str(exc),
+                message=_persisted_failure_message(exc),
                 retryable=exc.retryable,
                 policy=self.retry_policy,
             )
@@ -1220,8 +1267,15 @@ class CollectionJobExecutor:
             skipped=breakdown.skipped_duplicate + breakdown.skipped_unavailable,
             failed=breakdown.final_failed + breakdown.retryable_failed,
             skipped_duplicate=breakdown.skipped_duplicate,
-            skipped_unavailable=breakdown.skipped_unavailable,
+            skipped_unavailable=breakdown.skipped_media_unavailable,
+            skipped_restricted=breakdown.skipped_restricted,
         )
+
+
+def _persisted_failure_message(exc: MediaDLError) -> str:
+    if isinstance(exc, DownloadError) and exc.detail:
+        return exc.detail
+    return str(exc)
 
 
 def _remove_new_duplicate(downloaded: Path, kept: Path) -> bool:

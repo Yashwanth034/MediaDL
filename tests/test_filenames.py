@@ -112,10 +112,42 @@ def test_collection_layout_uses_audio_or_requested_media_folder(tmp_path: Path) 
     assert audio == tmp_path.resolve() / "Example - Channel" / "Audio"
 
 
+
+def test_unicode_components_are_bounded_by_utf8_bytes() -> None:
+    value = sanitize_component("తెలుగు" * 100, max_length=160)
+
+    assert len(value.encode()) <= 160
+    assert value
+
+
+def test_ytdlp_template_keeps_multibyte_temp_filename_under_filesystem_limit(
+    tmp_path: Path,
+) -> None:
+    from yt_dlp import YoutubeDL
+
+    options = FilenamePolicy(max_filename_length=220).ytdlp_options(tmp_path)
+    with YoutubeDL({**options, "quiet": True}) as ydl:
+        filename = Path(
+            ydl.prepare_filename(
+                {
+                    "id": "5DHvwHQuuCo",
+                    "title": (
+                        "గురువారం రోజు అన్ని రాశుల వారు ఈ పాటలు వింటే మీ కుటుంబం వ్యాపారం "
+                        "అంతా బాగుంటుంది - SAI RAM SAI SHAYM"
+                    ),
+                    "ext": "m4a",
+                }
+            )
+        )
+
+    assert filename.name.endswith("[5DHvwHQuuCo].m4a")
+    assert len(filename.name.encode()) <= 220
+    assert len(f"{filename.name}.part".encode()) <= 255
+
 def test_ytdlp_policy_trims_title_before_source_id(tmp_path: Path) -> None:
     options = FilenamePolicy(max_filename_length=220).ytdlp_options(tmp_path)
 
-    assert "%(title).160s" in options["outtmpl"]
+    assert "%(title).160B" in options["outtmpl"]
     assert "[%(id)s].%(ext)s" in options["outtmpl"]
     assert options["windowsfilenames"] is True
     assert options["trim_file_name"] == 220
