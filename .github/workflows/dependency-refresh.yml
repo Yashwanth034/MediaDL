@@ -51,9 +51,11 @@ jobs:
           git commit -m "Update bundled Deno to ${VERSION}"
           git push --force origin "$BRANCH"
           if ! gh pr view "$BRANCH" >/dev/null 2>&1; then
-            gh pr create \
+            if ! gh pr create \
               --base main \
               --head "$BRANCH" \
               --title "Update bundled Deno to ${VERSION}" \
-              --body "Automated stable Deno refresh. The full six-platform MediaDL release build must pass before this update is merged."
+              --body "Automated stable Deno refresh. The full six-platform MediaDL release build must pass before this update is merged."; then
+              echo "::warning::GitHub Actions is not allowed to create pull requests for this repository. The update branch $BRANCH was pushed successfully and is ready for a pull request."
+            fi
           fi
