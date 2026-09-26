@@ -22,7 +22,7 @@ sys.path.insert(0, str(SRC))
 from mediadl import __version__  # noqa: E402
 from mediadl.core.updater import platform_key  # noqa: E402
 
-DENO_VERSION = "2.9.6"
+DENO_VERSION = "2.9.7"
 _DENO_ASSETS = {
     "linux-x86_64": "deno-x86_64-unknown-linux-gnu.zip",
     "linux-arm64": "deno-aarch64-unknown-linux-gnu.zip",
